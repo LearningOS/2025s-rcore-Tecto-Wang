@@ -109,6 +109,11 @@ impl VirtAddr {
         self.0 & (PAGE_SIZE - 1)
     }
 
+    /// 获取虚拟地址所在的页的起始地址
+    pub fn page_start(self) -> usize {
+        self.0 & !(PAGE_SIZE - 1)  // 按页大小对齐，通常是 4KB（4096 字节）
+    }
+
     /// Check if the virtual address is aligned by page size
     pub fn aligned(&self) -> bool {
         self.page_offset() == 0

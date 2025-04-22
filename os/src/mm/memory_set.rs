@@ -63,6 +63,78 @@ impl MemorySet {
             None,
         );
     }
+
+    ///
+    pub fn is_overlap(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let r_start = start.floor();
+        let r_end = end.ceil();
+        self.areas.iter().any(|area| {
+            let a_start = area.vpn_range.get_start();
+            let a_end = area.vpn_range.get_end();
+            !(r_end <= a_start || r_start >= a_end)
+        })
+    }
+
+    ///
+    pub fn remove_area(&mut self, start: VirtAddr, end: VirtAddr) -> bool {
+        let start_vpn = start.floor();
+        let end_vpn = end.ceil();
+        if let Some(index) = self.areas.iter().position(|area| {
+            area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn
+        }) {
+            let mut area = self.areas.remove(index);
+            area.unmap(&mut self.page_table);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 检查用户地址是否可以访问
+    pub fn is_user_accessible(&self, va: VirtAddr, for_write: bool) -> bool {
+        let vpn = va.floor();
+        if let Some(pte) = self.translate(vpn) {
+            let flags = pte.flags();
+            if !flags.contains(PTEFlags::U) {
+                return false; // 不是用户页
+            }
+            if for_write {
+                flags.contains(PTEFlags::W) // 必须有写权限
+            } else {
+                flags.contains(PTEFlags::R) // 必须有读权限
+            }
+        } else {
+            false // 地址不可访问
+        }
+    }
+
+    /// 从用户空间读取一个字节
+    pub fn get_byte_from_user_space(&self, va: VirtAddr) -> Option<u8> {
+        let vpn = va.floor();
+        if let Some(pte) = self.translate(vpn) {
+            let ppn = pte.ppn();
+            let page_bytes = ppn.get_bytes_array();
+            let offset = va.page_offset();
+            Some(page_bytes[offset])
+        } else {
+            None
+        }
+    }
+
+    /// 向用户空间写入一个字节
+    pub fn write_byte_to_user_space(&self, va: VirtAddr, data: u8) -> bool {
+        let vpn = va.floor();
+        if let Some(pte) = self.translate(vpn) {
+            let ppn = pte.ppn();
+            let page_bytes = ppn.get_bytes_array();
+            let offset = va.page_offset();
+            page_bytes[offset] = data; // 写入数据
+            true
+        } else {
+            false
+        }
+    }
+    
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
