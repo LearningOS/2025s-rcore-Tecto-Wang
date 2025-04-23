@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -69,6 +69,42 @@ pub fn list_apps() {
         println!("{}", app);
     }
     println!("**************/");
+}
+
+/// Create a hard link from `old_path` to `new_path`.
+pub fn link(old_path: &str, new_path: &str) -> bool {
+    if old_path == new_path {
+        return false;
+    }
+    if let Some(inode) = ROOT_INODE.find(old_path) {
+        // Check if new_path already exists
+        if ROOT_INODE.find(new_path).is_some() {
+            return false;
+        }
+        ROOT_INODE.link(new_path, inode);
+        true
+    } else {
+        false
+    }
+}
+
+/// Remove a file path from the filesystem.
+pub fn unlink(path: &str) -> bool {
+    if let Some(inode) = ROOT_INODE.find(path) {
+        // Remove the directory entry
+        if ROOT_INODE.remove(path) {
+            // If no other hard links remain, clear the inode
+            // Note: In easy-fs this usually always applies
+            if inode.get_nlink_num() == 0 {
+                inode.clear();
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
 }
 
 bitflags! {
@@ -155,5 +191,19 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn stat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        Stat {
+            dev: 0,
+            ino: inner.inode.get_ino() as u64,
+            mode: if inner.inode.is_dir() {
+                StatMode::DIR
+            } else {
+                StatMode::FILE
+            },
+            nlink: inner.inode.get_nlink_num(),
+            pad: [0; 7],
+        }
     }
 }
