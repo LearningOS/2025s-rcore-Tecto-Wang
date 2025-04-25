@@ -5,6 +5,8 @@ use super::{kstack_alloc, KernelStack, ProcessControlBlock, TaskContext};
 use crate::trap::TrapContext;
 use crate::{mm::PhysPageNum, sync::UPSafeCell};
 use alloc::sync::{Arc, Weak};
+use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::RefMut;
 
 /// Task control block structure
@@ -41,6 +43,15 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+    
+    /// mutex 的 Allocation[m]
+    pub m_allocation: Vec<usize>,
+    /// semaphore 的 Allocation[m]
+    pub s_allocation: Vec<usize>,
+    /// mutex 的 Need[m]
+    pub m_need: Vec<usize>,
+    /// semaphore 的 Need[m]
+    pub s_need: Vec<usize>,
 }
 
 impl TaskControlBlockInner {
@@ -75,6 +86,10 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    m_allocation: vec![],
+                    s_allocation: vec![],
+                    m_need: vec![],
+                    s_need: vec![],
                 })
             },
         }
