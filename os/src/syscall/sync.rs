@@ -170,6 +170,11 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
         process_inner.s_available.push(res_count);
         process_inner.semaphore_list.len() - 1
     };
+    for task in process_inner.tasks.iter().flatten() {
+        let mut task_inner = task.inner_exclusive_access();
+        ensure_vec_len(&mut task_inner.s_need, id);
+        ensure_vec_len(&mut task_inner.s_allocation, id);
+    }
     drop(process_inner);
 
     id as isize
@@ -212,20 +217,19 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     );
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
-    let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     let task = &current_task().unwrap();
 
     if process_inner.deadlock_detect_enabled {
         let mut task_inner = task.inner_exclusive_access();
         ensure_vec_len(&mut task_inner.s_need, sem_id);
         ensure_vec_len(&mut task_inner.s_allocation, sem_id);
-
         task_inner.s_need[sem_id] += 1;
 
-        // 释放锁，确保资源分配和死锁检测的分离
+        task_inner.s_allocation[sem_id] += 1;
+        process_inner.s_available[sem_id] -= 1;
         drop(task_inner);
 
-        // 模拟资源分配并进行死锁检测
+        // 在修改资源需求之前，先进行死锁检测
         let tasks = process_inner
             .tasks
             .iter()
@@ -233,24 +237,30 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
             .cloned()
             .collect::<Vec<_>>();
         let available = &process_inner.s_available;
-
+        
+        // 死锁检测
         if !is_safe_state(available, &tasks, false) {
             // 死锁检测失败，回滚资源需求
             let mut task_inner = task.inner_exclusive_access();
             task_inner.s_need[sem_id] -= 1;
-            return -0xdead;  // 返回死锁错误
+            task_inner.s_allocation[sem_id] -= 1;
+            process_inner.s_available[sem_id] += 1;
+            return -0xdead;
         }
 
-        // 如果没有死锁，更新资源分配
         let mut task_inner = task.inner_exclusive_access();
         task_inner.s_need[sem_id] -= 1;
         task_inner.s_allocation[sem_id] += 1;
-        process_inner.s_available[sem_id] -= 1;
         drop(task_inner);
+
+        process_inner.s_available[sem_id] -= 1;
     }
+    let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
 
     drop(process_inner);
+
     sem.down();
+
     0
 }
 /// condvar create syscall
@@ -349,87 +359,44 @@ fn is_safe_state(available: &[usize], tasks: &[Arc<TaskControlBlock>], use_mutex
     let mut finish = vec![false; tasks.len()];
 
     loop {
-        let mut progress = false;
+        let mut progress_made = false;
 
         for (i, task) in tasks.iter().enumerate() {
             if finish[i] {
-                continue; // 已完成的任务无需检查
+                continue;
             }
-            
+
             let inner = task.inner_exclusive_access();
+            
+
             let (need, allocation) = if use_mutex {
                 (&inner.m_need, &inner.m_allocation)
             } else {
                 (&inner.s_need, &inner.s_allocation)
             };
 
-            // 确保长度一致，避免越界
             if need.len() > work.len() || allocation.len() > work.len() {
                 continue;
             }
 
-            // 检查 need ≤ work
-            if need.iter().zip(work.iter()).all(|(&n, &w)| n <= w) {
-                // 模拟释放资源：work += allocation
+            // 检查 need <= work
+            let can_finish = need.iter().zip(work.iter()).all(|(&n, &w)| n <= w);
+
+            if can_finish {
+                // 模拟执行完成，释放 allocation 回到 work
                 for j in 0..allocation.len() {
                     work[j] += allocation[j];
                 }
                 finish[i] = true;
-                progress = true;
+                progress_made = true;
             }
         }
 
-        if !progress {
-            break;
+        if !progress_made {
+            return finish.iter().all(|&f| f);
         }
     }
-
-    finish.iter().all(|&f| f)
 }
-
-/*///
-fn try_allocate_and_check_safe(
-    task: &Arc<TaskControlBlock>,
-    available: &mut [usize],
-    use_mutex: bool,
-    resource_id: usize,
-    tasks: &[Arc<TaskControlBlock>],
-) -> bool {
-    let mut tcb_inner = task.inner_exclusive_access();
-
-    // 检查资源ID是否合法
-    if resource_id >= tcb_inner.m_need.len() || resource_id >= tcb_inner.m_allocation.len() || resource_id >= available.len() {
-        return false;
-    }
-
-    // 分配资源
-    if use_mutex {
-        tcb_inner.m_need[resource_id] -= 1;
-        tcb_inner.m_allocation[resource_id] += 1;
-        available[resource_id] -= 1;
-    } else {
-        tcb_inner.s_need[resource_id] -= 1;
-        tcb_inner.s_allocation[resource_id] += 1;
-        available[resource_id] -= 1;
-    }
-
-    // 进行死锁检测
-    let safe = is_safe_state(available, tasks, use_mutex);
-
-    if !safe {
-        // 回滚资源分配
-        if use_mutex {
-            tcb_inner.m_need[resource_id] += 1;
-            tcb_inner.m_allocation[resource_id] -= 1;
-        } else {
-            tcb_inner.s_need[resource_id] += 1;
-            tcb_inner.s_allocation[resource_id] -= 1;
-        }
-        available[resource_id] += 1;
-    }
-
-    safe
-}*/
 
 ///
 fn ensure_vec_len(vec: &mut Vec<usize>, index: usize) {
